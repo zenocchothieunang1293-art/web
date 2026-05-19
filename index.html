@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP8266 MQTT Dashboard</title>
+    <!-- Thư viện Paho MQTT -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js" type="text/javascript"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f7f6;
+            color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 500px;
+        }
+        h2 {
+            text-align: center;
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+        .status {
+            text-align: center;
+            font-size: 14px;
+            font-weight: bold;
+            margin-bottom: 20px;
+            color: #e74c3c;
+        }
+        .status.connected {
+            color: #27ae60;
+        }
+        .card {
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .sensor-value {
+            font-size: 20px;
+            font-weight: bold;
+            color: #2980b9;
+        }
+        /* CSS cho nút gạt (Switch) */
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+        }
+        .switch input { 
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 24px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 16px; width: 16px;
+            left: 4px; bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        input:checked + .slider {
+            background-color: #27ae60;
+        }
+        input:checked + .slider.auto-mode {
+            background-color: #8e44ad;
+        }
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>HỆ THỐNG ESP8266</h2>
+    <div id="connectionStatus" class="status">Đang kết nối...</div>
+
+    <!-- KHU VỰC CẢM BIẾN -->
+    <div class="card">
+        <span class="card-title">🌡️ Nhiệt độ</span>
+        <span class="sensor-value" id="val_temp">-- °C</span>
+    </div>
+    <div class="card">
+        <span class="card-title">💧 Độ ẩm</span>
+        <span class="sensor-value" id="val_hum">-- %</span>
+    </div>
+    <div class="card">
+        <span class="card-title">💨 Cảm biến MQ2 (ADC)</span>
+        <span class="sensor-value" id="val_adc">--</span>
+    </div>
+
+    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+
+    <!-- KHU VỰC ĐIỀU KHIỂN -->
+    <div class="card">
+        <span class="card-title">🤖 Chế độ (Tự động/Thủ công)</span>
+        <label class="switch">
+            <input type="checkbox" id="btn_mode" onchange="publishMessage('esp8266/control/mode', this.checked)">
+            <span class="slider auto-mode"></span>
+        </label>
+    </div>
+    <div class="card">
+        <span class="card-title">💡 Đèn LED (IO12)</span>
+        <label class="switch">
+            <input type="checkbox" id="btn_led" onchange="publishMessage('esp8266/control/led', this.checked)">
+            <span class="slider"></span>
+        </label>
+    </div>
+    <div class="card">
+        <span class="card-title">⚡ Relay / Quạt (IO14)</span>
+        <label class="switch">
+            <input type="checkbox" id="btn_relay" onchange="publishMessage('esp8266/control/relay', this.checked)">
+            <span class="slider"></span>
+        </label>
+    </div>
+</div>
+
+<script>
+    // ---------------- THÔNG TIN KẾT NỐI ----------------
+    var mqtt_server = "broker.emqx.io";
+    var mqtt_port = 8084; // Đổi từ 8084 sang 8000
+    var client_id = "WebClient_" + Math.random().toString(16).substr(2, 8);
+
+    // Khởi tạo MQTT Client
+    var client = new Paho.MQTT.Client(mqtt_server, mqtt_port, client_id);
+
+    // Gán các hàm xử lý sự kiện
+    client.onConnectionLost = onConnectionLost;
+    client.onMessageArrived = onMessageArrived;
+
+    // Lựa chọn kết nối (sử dụng WSS - Secure WebSocket)
+    var options = {
+        timeout: 3,
+        useSSL: true,
+        onSuccess: onConnect,
+        onFailure: onFailure
+    };
+
+    // Tiến hành kết nối
+    client.connect(options);
+
+    // ---------------- CÁC HÀM XỬ LÝ ----------------
+    function onConnect() {
+        var statusEl = document.getElementById("connectionStatus");
+        statusEl.innerHTML = "Đã kết nối với EMQX Broker";
+        statusEl.classList.add("connected");
+
+        // Đăng ký nhận dữ liệu (Subscribe)
+        client.subscribe("esp8266/sensor/#");
+        client.subscribe("esp8266/control/#");
+    }
+
+    function onFailure(message) {
+        document.getElementById("connectionStatus").innerHTML = "Lỗi kết nối: " + message.errorMessage;
+    }
+
+    function onConnectionLost(responseObject) {
+        if (responseObject.errorCode !== 0) {
+            var statusEl = document.getElementById("connectionStatus");
+            statusEl.innerHTML = "Mất kết nối. Đang thử lại...";
+            statusEl.classList.remove("connected");
+            // Thử kết nối lại sau 5 giây
+            setTimeout(function() {
+                client.connect(options);
+            }, 5000);
+        }
+    }
+
+    // Hàm nhận và phân tích tin nhắn từ ESP8266
+    function onMessageArrived(message) {
+        var topic = message.destinationName;
+        var payload = message.payloadString;
+
+        // Xử lý Cảm biến
+        if (topic === "esp8266/sensor/temperature") {
+            document.getElementById("val_temp").innerHTML = parseFloat(payload).toFixed(1) + " °C";
+        } 
+        else if (topic === "esp8266/sensor/humidity") {
+            document.getElementById("val_hum").innerHTML = parseFloat(payload).toFixed(1) + " %";
+        } 
+        else if (topic === "esp8266/sensor/adc") {
+            document.getElementById("val_adc").innerHTML = payload;
+        }
+
+        // Xử lý Đồng bộ công tắc điều khiển
+        else if (topic === "esp8266/control/mode") {
+            document.getElementById("btn_mode").checked = (payload === "1" || payload === "AUTO");
+        }
+        else if (topic === "esp8266/control/led") {
+            document.getElementById("btn_led").checked = (payload === "1" || payload === "ON");
+        }
+        else if (topic === "esp8266/control/relay") {
+            document.getElementById("btn_relay").checked = (payload === "1" || payload === "ON");
+        }
+    }
+
+    // Hàm gửi tin nhắn MQTT khi bấm công tắc trên Web
+    function publishMessage(topic, isChecked) {
+        var payload = isChecked ? "1" : "0";
+        var message = new Paho.MQTT.Message(payload);
+        message.destinationName = topic;
+        
+        // DÒNG THÊM MỚI: Bật tính năng lưu giữ tin nhắn trên Broker
+        message.retained = true; 
+        
+        client.send(message);
+    }
+</script>
+
+</body>
+</html>
